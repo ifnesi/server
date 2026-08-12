@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2022 mochi-mqtt, mochi-co
 // SPDX-FileContributor: mochi-co
+// SPDX-FileContributor: Italo Nesi
 
 // Package mqtt provides a high performance, fully compliant MQTT v5 broker server with v3.1.1 backward compatibility.
 package mqtt
@@ -1241,9 +1242,6 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 func (s *Server) processSubscribe(cl *Client, pk packets.Packet) error {
 	pk = s.hooks.OnSubscribe(cl, pk)
 	code := packets.CodeSuccess
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); ok {
-		code = packets.ErrPacketIdentifierInUse
-	}
 
 	filterExisted := make([]bool, len(pk.Filters))
 	reasonCodes := make([]byte, len(pk.Filters))
@@ -1315,9 +1313,6 @@ func (s *Server) processSubscribe(cl *Client, pk packets.Packet) error {
 // processUnsubscribe processes an unsubscribe packet.
 func (s *Server) processUnsubscribe(cl *Client, pk packets.Packet) error {
 	code := packets.CodeSuccess
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); ok {
-		code = packets.ErrPacketIdentifierInUse
-	}
 
 	pk = s.hooks.OnUnsubscribe(cl, pk)
 	reasonCodes := make([]byte, len(pk.Filters))
