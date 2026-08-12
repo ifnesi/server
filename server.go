@@ -1242,6 +1242,9 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 func (s *Server) processSubscribe(cl *Client, pk packets.Packet) error {
 	pk = s.hooks.OnSubscribe(cl, pk)
 	code := packets.CodeSuccess
+	if pki, ok := cl.State.Inflight.Get(pk.PacketID); ok && pki.FixedHeader.Type == packets.Pubrec {
+		code = packets.ErrPacketIdentifierInUse
+	}
 
 	filterExisted := make([]bool, len(pk.Filters))
 	reasonCodes := make([]byte, len(pk.Filters))
@@ -1313,6 +1316,9 @@ func (s *Server) processSubscribe(cl *Client, pk packets.Packet) error {
 // processUnsubscribe processes an unsubscribe packet.
 func (s *Server) processUnsubscribe(cl *Client, pk packets.Packet) error {
 	code := packets.CodeSuccess
+	if pki, ok := cl.State.Inflight.Get(pk.PacketID); ok && pki.FixedHeader.Type == packets.Pubrec {
+		code = packets.ErrPacketIdentifierInUse
+	}
 
 	pk = s.hooks.OnUnsubscribe(cl, pk)
 	reasonCodes := make([]byte, len(pk.Filters))

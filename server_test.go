@@ -2840,6 +2840,52 @@ func TestServerProcessPacketSubscribeInvalidSharedNoLocal(t *testing.T) {
 	require.Equal(t, packets.TPacketData[packets.Suback].Get(packets.TSubackInvalidSharedNoLocal).RawBytes, buf)
 }
 
+// A Pubrec entry is the client's OWN QoS 2 publish still in its
+// PUBREL exchange, so that identifier really is in use by the client
+// and 0x91 is correct. A Publish entry is the server's outbound
+// message, whose identifiers are a separate space — see
+// TestServerProcessSubscribeWithServerInflightPacketID.
+func TestServerProcessPacketSubscribePacketIDInUse(t *testing.T) {
+	s := newServer()
+	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 5
+	cl.State.Inflight.Set(packets.Packet{PacketID: 15, FixedHeader: packets.FixedHeader{Type: packets.Pubrec}})
+
+	pkx := *packets.TPacketData[packets.Subscribe].Get(packets.TSubscribeMqtt5).Packet
+	pkx.PacketID = 15
+	go func() {
+		err := s.processPacket(cl, pkx)
+		require.NoError(t, err)
+		_ = w.Close()
+	}()
+
+	buf, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.Equal(t, packets.TPacketData[packets.Suback].Get(packets.TSubackPacketIDInUse).RawBytes, buf)
+}
+
+// A Pubrec entry is the client's OWN QoS 2 publish still in its
+// PUBREL exchange, so that identifier really is in use by the client
+// and 0x91 is correct. A Publish entry is the server's outbound
+// message, whose identifiers are a separate space — see
+// TestServerProcessSubscribeWithServerInflightPacketID.
+func TestServerProcessPacketUnsubscribePackedIDInUse(t *testing.T) {
+	s := newServer()
+	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 5
+	cl.State.Inflight.Set(packets.Packet{PacketID: 15, FixedHeader: packets.FixedHeader{Type: packets.Pubrec}})
+	go func() {
+		err := s.processPacket(cl, *packets.TPacketData[packets.Unsubscribe].Get(packets.TUnsubscribeMqtt5).Packet)
+		require.NoError(t, err)
+		_ = w.Close()
+	}()
+
+	buf, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.Equal(t, packets.TPacketData[packets.Unsuback].Get(packets.TUnsubackPacketIDInUse).RawBytes, buf)
+	require.Equal(t, int64(0), atomic.LoadInt64(&s.Info.Subscriptions))
+}
+
 // Packet Identifiers assigned by the Client and by the Server are
 // independent: MQTT 3.1.1 2.3.1 and MQTT 5.0 2.2.1 both say so, and both
 // give the same example — a Client can send a packet with identifier
