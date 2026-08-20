@@ -100,7 +100,7 @@ func (l *Websocket) handler(w http.ResponseWriter, r *http.Request) {
 
 	err = l.establish(l.id, &wsConn{Conn: c.UnderlyingConn(), c: c})
 	if err != nil {
-		l.log.Warn("failed to establish connection", "error", err)
+		l.log.Warn("connection ended with an error", "error", err)
 	}
 }
 

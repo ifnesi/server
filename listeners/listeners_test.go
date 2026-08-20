@@ -243,7 +243,7 @@ func TestListenerLogLineNamesTheListenerOnce(t *testing.T) {
 	// the scheduler rather than on the code.
 	var line string
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		if line = out.String(); strings.Contains(line, "failed to establish connection") {
+		if line = out.String(); strings.Contains(line, "connection ended with an error") {
 			break
 		}
 		time.Sleep(time.Millisecond)
@@ -251,8 +251,8 @@ func TestListenerLogLineNamesTheListenerOnce(t *testing.T) {
 	l.Close(MockCloser)
 	<-o
 
-	require.Contains(t, line, "failed to establish connection",
-		"the listener logged nothing for a failed establish")
+	require.Contains(t, line, "connection ended with an error",
+		"the listener logged nothing for a connection that ended badly")
 	require.Contains(t, line, "listener="+basicConfig.ID)
 	require.Equal(t, 1, strings.Count(line, "listener="),
 		"the listener id is repeated in the line: %s", line)

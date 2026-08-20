@@ -77,7 +77,7 @@ func (l *UnixSock) Serve(establish EstablishFn) {
 			go func() {
 				err = establish(l.id, conn)
 				if err != nil {
-					l.log.Warn("failed to establish connection", "error", err)
+					l.log.Warn("connection ended with an error", "error", err)
 				}
 			}()
 		}
