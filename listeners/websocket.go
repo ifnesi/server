@@ -100,7 +100,7 @@ func (l *Websocket) handler(w http.ResponseWriter, r *http.Request) {
 
 	err = l.establish(l.id, &wsConn{Conn: c.UnderlyingConn(), c: c})
 	if err != nil {
-		l.log.Warn("failed to establish connection", "error", err, "listener", l.id)
+		l.log.Warn("failed to establish connection", "error", err)
 	}
 }
 
@@ -118,7 +118,7 @@ func (l *Websocket) Serve(establish EstablishFn) {
 
 	// After the listener has been shutdown, no need to print the http.ErrServerClosed error.
 	if err != nil && atomic.LoadUint32(&l.end) == 0 {
-		l.log.Error("failed to serve.", "error", err, "listener", l.id)
+		l.log.Error("failed to serve.", "error", err)
 	}
 }
 
