@@ -960,6 +960,7 @@ func TestServerEstablishConnectionZeroValuedProperties(t *testing.T) {
 		{"receive maximum", packets.TConnectInvalidZeroReceiveMaximum, packets.ErrProtocolViolationZeroReceiveMaximum},
 		{"maximum packet size", packets.TConnectInvalidZeroMaximumPacketSize, packets.ErrProtocolViolationZeroMaximumPacketSize},
 	} {
+		tt := tt // go.mod says go 1.21, so the range variable is shared
 		t.Run(tt.name, func(t *testing.T) {
 			s := newServer()
 
