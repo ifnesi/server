@@ -272,7 +272,17 @@ func (cl *Client) ParseConnect(lid string, pk packets.Packet) {
 	}
 }
 
-// refreshDeadline refreshes the read/write deadline for the net.Conn connection.
+// refreshDeadline refreshes the read deadline for the net.Conn connection.
+//
+// The read deadline and not both: [MQTT-3.1.2-22] is a rule about packets
+// the client sends, and SetDeadline would apply it to writes as well. That
+// was harmless while nothing else set a write deadline, and became a way
+// for a client to switch one off the moment ClientNetWriteTimeout existed:
+// this runs at the top of every pass of the read loop, so any packet
+// needing no reply — a QoS 0 PUBLISH, a PUBACK, an UNSUBSCRIBE — cleared
+// the deadline a queued write had armed. With keepalive 0 it cleared it
+// outright; with keepalive 60 it pushed it 90 seconds out, and the next
+// packet pushed it again.
 func (cl *Client) refreshDeadline(keepalive uint16) {
 	var expiry time.Time // nil time can be used to disable deadline if keepalive = 0
 	if keepalive > 0 {
@@ -280,7 +290,7 @@ func (cl *Client) refreshDeadline(keepalive uint16) {
 	}
 
 	if cl.Net.Conn != nil {
-		_ = cl.Net.Conn.SetDeadline(expiry) // [MQTT-3.1.2-22]
+		_ = cl.Net.Conn.SetReadDeadline(expiry) // [MQTT-3.1.2-22]
 	}
 }
 
