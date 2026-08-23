@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1069,5 +1070,75 @@ func TestClientWritePacketRequestProblemInfoExemptsPublish(t *testing.T) {
 
 			require.Equal(t, tx.want, bytes.Contains(<-o, []byte("prop-key")))
 		})
+	}
+}
+
+// A client that never reads its socket must not hold the client lock for
+// ever, because every write happens under it — including the one
+// publishToClient needs a packet identifier for before it can reach the
+// outbound queue that would have shed that client.
+//
+// net.Pipe is unbuffered, so a write to it blocks until the other side
+// reads. Nothing reads here, which is a client that has stopped reading
+// exactly as a full socket buffer is.
+func TestClientWritePacketTimesOutRatherThanHoldingTheLock(t *testing.T) {
+	cl, _, _ := newTestClient()
+	defer cl.Stop(errClientStop)
+	cl.ops.options.ClientNetWriteTimeout = 50 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cl.WritePacket(*pkTable[1].Packet)
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+	case <-time.After(2 * time.Second):
+		t.Fatal("WritePacket to a client that never reads did not return: it is holding " +
+			"the client lock, and every other goroutine that needs it — publishToClient " +
+			"taking a packet identifier for a QoS 1 delivery — waits behind it")
+	}
+
+	// And the lock is free again, which is the whole point of bounding it.
+	locked := make(chan struct{})
+	go func() {
+		cl.Lock()
+		cl.Unlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the client lock was still held after the write timed out")
+	}
+}
+
+// Zero is the default and must leave writes exactly as they were, so that
+// taking this patch changes nothing for anyone who does not set it.
+func TestClientWritePacketIsUnboundedByDefault(t *testing.T) {
+	cl, r, _ := newTestClient()
+	defer cl.Stop(errClientStop)
+	require.Zero(t, cl.ops.options.ClientNetWriteTimeout)
+
+	done := make(chan error, 1)
+	go func() { done <- cl.WritePacket(*pkTable[1].Packet) }()
+
+	// It is still blocked a moment later, because nothing has read yet.
+	select {
+	case err := <-done:
+		t.Fatalf("the write returned early with %v: without a timeout it waits for a reader", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Read, and it completes normally.
+	buf := make([]byte, len(pkTable[1].RawBytes))
+	go func() { _, _ = io.ReadFull(r, buf) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the write never completed even once its reader arrived")
 	}
 }

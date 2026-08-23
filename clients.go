@@ -608,6 +608,24 @@ func (cl *Client) WritePacket(pk packets.Packet) error {
 	n, err := func() (int64, error) {
 		cl.Lock()
 		defer cl.Unlock()
+
+		// Armed inside the lock and cleared before it is released, so that
+		// the deadline belongs to this write and to no other. A connection
+		// deadline is a property of the connection rather than of a write,
+		// so arming it outside would let one goroutine clear the deadline
+		// another is relying on.
+		//
+		// The lock is the reason this matters at all: every write below
+		// happens while it is held, so a write that never completes holds
+		// the client's lock for as long as the client stays connected, and
+		// publishToClient blocks on that same lock before it can reach the
+		// outbound queue that would have shed the client.
+		if d := cl.ops.options.ClientNetWriteTimeout; d > 0 && cl.Net.Conn != nil {
+			if err := cl.Net.Conn.SetWriteDeadline(time.Now().Add(d)); err == nil {
+				defer cl.Net.Conn.SetWriteDeadline(time.Time{})
+			}
+		}
+
 		if len(cl.State.outbound) == 0 {
 			if cl.Net.outbuf == nil {
 				return buf.WriteTo(cl.Net.Conn)
