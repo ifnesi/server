@@ -1163,3 +1163,42 @@ func TestClientWriteLoopStopsTheClientWhenAWriteTimesOut(t *testing.T) {
 		"the client was not stopped after its write ran out of time")
 	require.True(t, isTimeout(cl.StopCause()), "want a network timeout, got %v", cl.StopCause())
 }
+
+func TestClientWritePacketDeadlineSurvivesThePacketsTheClientSends(t *testing.T) {
+	cl, r, _ := newTestClient()
+	defer cl.Stop(errClientStop)
+	cl.ops.options.ClientNetWriteTimeout = 50 * time.Millisecond
+	cl.State.Keepalive = 0 // the worst case: the refresh's expiry is the zero time
+
+	go func() { _ = cl.Read(func(*Client, packets.Packet) error { return nil }) }()
+
+	// The client keeps sending packets that need no reply, which is what
+	// takes the read loop round again — and round again is where the
+	// keepalive deadline is refreshed.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+			if _, err := r.Write([]byte{packets.Pingreq << 4, 0}); err != nil {
+				return
+			}
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- cl.WritePacket(*pkTable[1].Packet) }()
+
+	select {
+	case err := <-done:
+		require.True(t, isTimeout(err), "want a network timeout, got %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a client that keeps sending switched off the write deadline armed for " +
+			"it: the keepalive refresh runs at the top of every pass of the read loop, " +
+			"so it has to bound reads and not both")
+	}
+}
