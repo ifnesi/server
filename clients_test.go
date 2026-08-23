@@ -13,7 +13,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1094,7 +1093,7 @@ func TestClientWritePacketTimesOutRatherThanHoldingTheLock(t *testing.T) {
 	select {
 	case err := <-done:
 		require.Error(t, err)
-		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+		require.True(t, isTimeout(err), "want a network timeout, got %v", err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("WritePacket to a client that never reads did not return: it is holding " +
 			"the client lock, and every other goroutine that needs it — publishToClient " +
@@ -1162,5 +1161,5 @@ func TestClientWriteLoopStopsTheClientWhenAWriteTimesOut(t *testing.T) {
 	// client rather than trying the next packet into a broken stream.
 	require.Eventually(t, cl.Closed, 2*time.Second, 10*time.Millisecond,
 		"the client was not stopped after its write ran out of time")
-	require.ErrorIs(t, cl.StopCause(), os.ErrDeadlineExceeded)
+	require.True(t, isTimeout(cl.StopCause()), "want a network timeout, got %v", cl.StopCause())
 }

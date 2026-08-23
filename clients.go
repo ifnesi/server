@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -208,7 +207,7 @@ func (cl *Client) WriteLoop() {
 				// lock for every remaining queued packet, a timeout at a
 				// time, while every other goroutine that needs that lock —
 				// publishToClient taking a packet identifier — waits.
-				if errors.Is(err, os.ErrDeadlineExceeded) {
+				if isTimeout(err) {
 					atomic.AddInt32(&cl.State.outboundQty, -1)
 					cl.Stop(err)
 					return
@@ -635,9 +634,14 @@ func (cl *Client) WritePacket(pk packets.Packet) error {
 		// the client's lock for as long as the client stays connected, and
 		// publishToClient blocks on that same lock before it can reach the
 		// outbound queue that would have shed the client.
-		if d := cl.ops.options.ClientNetWriteTimeout; d > 0 && cl.Net.Conn != nil {
-			if err := cl.Net.Conn.SetWriteDeadline(time.Now().Add(d)); err == nil {
-				defer cl.Net.Conn.SetWriteDeadline(time.Time{})
+		// The connection is read once and held, so that the deadline is
+		// cleared on the connection it was armed on rather than on
+		// whatever cl.Net.Conn names by the time the write returns.
+		if d := cl.ops.options.ClientNetWriteTimeout; d > 0 {
+			if conn := cl.Net.Conn; conn != nil {
+				if err := conn.SetWriteDeadline(time.Now().Add(d)); err == nil {
+					defer conn.SetWriteDeadline(time.Time{})
+				}
 			}
 		}
 
@@ -693,4 +697,18 @@ func (cl *Client) flushOutbuf() (err error) {
 		cl.Net.outbuf = nil
 	}
 	return
+}
+
+// isTimeout reports whether an error is a network timeout, which is what a
+// write that ran out of time under ClientNetWriteTimeout produces.
+//
+// net.Error's Timeout rather than errors.Is against os.ErrDeadlineExceeded:
+// the two agree for a plain TCP write, and do not for every listener. A
+// websocket connection writes through gorilla, whose buffered writev path
+// yields "writev tcp …: i/o timeout" — a timeout by every definition that
+// matters, and not that sentinel. Checking the sentinel silently covered
+// one transport and not another.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
