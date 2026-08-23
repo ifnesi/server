@@ -1006,3 +1006,25 @@ func TestClientWritePacketIsUnboundedByDefault(t *testing.T) {
 		t.Fatal("the write never completed even once its reader arrived")
 	}
 }
+
+// A write that ran out of time has put part of a packet on the wire, so
+// the next packet written would land in the middle of the last one. It is
+// also the moment the loop would otherwise take the client lock again for
+// every packet still queued, a timeout at a time, while publishToClient
+// waits for that lock to take a packet identifier.
+func TestClientWriteLoopStopsTheClientWhenAWriteTimesOut(t *testing.T) {
+	cl, _, _ := newTestClient()
+	cl.ops.options.ClientNetWriteTimeout = 50 * time.Millisecond
+
+	go cl.WriteLoop()
+
+	pk := *pkTable[1].Packet
+	cl.State.outbound <- &pk
+	atomic.AddInt32(&cl.State.outboundQty, 1)
+
+	// Nothing reads the pipe, so the write times out and the loop stops the
+	// client rather than trying the next packet into a broken stream.
+	require.Eventually(t, cl.Closed, 2*time.Second, 10*time.Millisecond,
+		"the client was not stopped after its write ran out of time")
+	require.ErrorIs(t, cl.StopCause(), os.ErrDeadlineExceeded)
+}
