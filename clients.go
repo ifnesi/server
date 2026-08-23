@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -198,6 +199,20 @@ func (cl *Client) WriteLoop() {
 			if err := cl.WritePacket(*pk); err != nil {
 				// TODO : Figure out what to do with error
 				cl.ops.log.Debug("failed publishing packet", "error", err, "client", cl.ID, "packet", pk)
+
+				// A write that ran out of time under
+				// ClientNetWriteTimeout has put part of a packet on the
+				// wire, and there is no way to continue that stream: the
+				// next packet written would land in the middle of the last
+				// one. Continuing also leaves this loop taking the client
+				// lock for every remaining queued packet, a timeout at a
+				// time, while every other goroutine that needs that lock —
+				// publishToClient taking a packet identifier — waits.
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					atomic.AddInt32(&cl.State.outboundQty, -1)
+					cl.Stop(err)
+					return
+				}
 			}
 			atomic.AddInt32(&cl.State.outboundQty, -1)
 		case <-cl.State.open.Done():
