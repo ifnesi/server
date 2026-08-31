@@ -1780,11 +1780,12 @@ func TestServerProcessPublishInvalidTopic(t *testing.T) {
 		{
 			// MQTT 3.1.1 has no reason code to put in a PUBACK, so the
 			// refusal is a disconnect, exactly as it is for an ACL denial.
+			// It is a silent one: v3 has no server-to-client Disconnect
+			// packet, so the connection closes and nothing is sent.
 			name:             "v4_QOS1",
 			protocolVersion:  4,
 			pk:               sysTopic(packets.TPublishQos1),
 			expectErr:        packets.ErrNotAuthorized,
-			expectResponse:   []byte{packets.Disconnect << 4, 0},
 			expectDisconnect: true,
 		},
 		{
@@ -1792,7 +1793,6 @@ func TestServerProcessPublishInvalidTopic(t *testing.T) {
 			protocolVersion:  4,
 			pk:               sysTopic(packets.TPublishQos2),
 			expectErr:        packets.ErrNotAuthorized,
-			expectResponse:   []byte{packets.Disconnect << 4, 0},
 			expectDisconnect: true,
 		},
 		{
