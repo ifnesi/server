@@ -1729,12 +1729,24 @@ func TestServerProcessPublishACLCheckDeny(t *testing.T) {
 			buf, err := io.ReadAll(r)
 			require.NoError(t, err)
 
+			// Joined before the assertions rather than after them. ReadAll
+			// returns when the pipe closes, and the disconnect under test
+			// is one of the things that closes it -- so it does not imply
+			// processPublish has returned, and cl.Closed() below was being
+			// read while Stop was still running.
+			//
+			// It also keeps the goroutine from outliving the iteration: a
+			// failed assertion calls FailNow, which skips a Wait placed
+			// after it, and the goroutine then reads tx while the next
+			// iteration writes it. go.mod declares go 1.21, so that is one
+			// variable for the whole loop.
+			wg.Wait()
+
 			if tx.expectReponse != nil {
 				require.Equal(t, tx.expectReponse, buf)
 			}
 
 			require.Equal(t, tx.expectDisconnect, cl.Closed())
-			wg.Wait()
 		})
 	}
 }
