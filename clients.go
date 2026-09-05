@@ -90,9 +90,9 @@ func (cl *Clients) Delete(id string) {
 
 // GetByListener returns clients matching a listener id.
 //
-// MAESTROHUB PATCH (deadlock): the capacity hint read cl.Len(), which takes
+// The capacity hint used to read cl.Len(), which takes
 // RLock a second time while this function already holds it. sync.RWMutex
-// documents that as prohibited — "if a goroutine holds a RWMutex for reading
+// documents that as prohibited - "if a goroutine holds a RWMutex for reading
 // and another goroutine might call Lock, no goroutine should expect to be
 // able to acquire a read lock until the initial read lock is released. In
 // particular, this prohibits recursive read locking."
