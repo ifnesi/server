@@ -123,7 +123,9 @@ func (l *Websocket) Serve(establish EstablishFn) {
 	if l.ln == nil {
 		// Init failed (or was never called): there is no socket to serve.
 		// Init already returned the bind error to the caller.
-		l.log.Error("failed to serve.", "error", "listener was not bound", "listener", l.id)
+		// No "listener" key: the logger AddListener built already carries
+		// it, and saying it twice is what #526 fixed.
+		l.log.Error("failed to serve.", "error", "listener was not bound")
 		return
 	}
 	if l.listen.TLSConfig != nil {
