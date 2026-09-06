@@ -1113,3 +1113,42 @@ func TestUnsubscribeSharedOnlyReportsWhatItRemoved(t *testing.T) {
 	require.False(t, index.Unsubscribe("$share/tmp/a/b/c", "cl3"))
 	require.True(t, index.Unsubscribe("$share/tmp/a/b/c", "cl2"))
 }
+
+// A retained message being stored while a wildcard subscriber's retained
+// scan walks the same particles must not race: RetainMessage writes
+// particle.retainPath under the particle lock, so scanMessages must read it
+// under the same lock. Run with -race; this test reproduced the report in
+// mochi-mqtt/server#200 deterministically before the fix.
+func TestRetainMessageWhileScanningDoesNotRace(t *testing.T) {
+	index := NewTopicsIndex()
+	// Seed siblings so the "#" scan has particles to iterate while a
+	// sibling's retainPath is being written.
+	for i := 0; i < 8; i++ {
+		index.RetainMessage(packets.Packet{
+			FixedHeader: packets.FixedHeader{Retain: true},
+			TopicName:   fmt.Sprintf("a/b/seed-%d", i),
+			Payload:     []byte("x"),
+		})
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			index.RetainMessage(packets.Packet{
+				FixedHeader: packets.FixedHeader{Retain: true},
+				TopicName:   fmt.Sprintf("a/b/c-%d", i%16),
+				Payload:     []byte("hello"),
+			})
+			index.RetainMessage(packets.Packet{ // clear it again: the "" write path
+				FixedHeader: packets.FixedHeader{Retain: true},
+				TopicName:   fmt.Sprintf("a/b/c-%d", i%16),
+			})
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		_ = index.Messages("a/#")
+		_ = index.Messages("a/b/+")
+		_ = index.Messages("a/b/c-1")
+	}
+	<-done
+}
