@@ -1056,7 +1056,13 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		return nil
 	} else if errors.Is(err, packets.CodeSuccessIgnore) {
 		pk.Ignore = true
-	} else if cl.Properties.ProtocolVersion == 5 && pk.FixedHeader.Qos > 0 && errors.As(err, new(packets.Code)) {
+	} else if refusal := (packets.Code{}); cl.Properties.ProtocolVersion == 5 && pk.FixedHeader.Qos > 0 && errors.As(err, &refusal) {
+		// The code errors.As extracted, not a type assertion on err itself.
+		// errors.As succeeds when a hook WRAPS a packets.Code - which
+		// fmt.Errorf("...: %w", code) does, and hooks do - and err is then
+		// the wrapper, so asserting on it panics and takes the broker down
+		// on an ordinary publish refusal.
+		//
 		// A QoS 2 publish rejected here must be answered with a PUBREC,
 		// not a PUBACK — same selection the ACL-deny branch above already
 		// makes for the same reason.
@@ -1064,7 +1070,7 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		if pk.FixedHeader.Qos == 2 {
 			ackType = packets.Pubrec
 		}
-		err = cl.WritePacket(s.buildAck(pk.PacketID, ackType, 0, pk.Properties, err.(packets.Code)))
+		err = cl.WritePacket(s.buildAck(pk.PacketID, ackType, 0, pk.Properties, refusal))
 		if err != nil {
 			return err
 		}
@@ -1613,10 +1619,18 @@ func (s *Server) DisconnectClient(cl *Client, code packets.Code) error {
 	// We already have a code we are using to disconnect the client, so we are not
 	// interested if the write packet fails due to a closed connection (as we are closing it).
 	var err error
-	if cl.Properties.ProtocolVersion >= 5 {
+	told := cl.Properties.ProtocolVersion >= 5
+	if told {
 		err = cl.WritePacket(out)
 	}
-	if !s.Options.Capabilities.Compatibilities.PassiveClientDisconnect {
+
+	// PassiveClientDisconnect means "the client was sent a DISCONNECT and
+	// will close the connection itself, so do not force it". A v3 client is
+	// sent nothing, because that packet does not exist in that direction, so
+	// there is nothing for it to act on: honouring the option there would
+	// make DisconnectClient do nothing at all - no packet, no close - and
+	// leave the connection open after the server decided to end it.
+	if !told || !s.Options.Capabilities.Compatibilities.PassiveClientDisconnect {
 		cl.Stop(code)
 		if code.Code >= packets.ErrUnspecifiedError.Code {
 			return code

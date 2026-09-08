@@ -8,6 +8,7 @@ package mqtt
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -5061,5 +5062,76 @@ func TestOnConnectRefusedIsOptional(t *testing.T) {
 	go func() { _, _ = io.ReadAll(w) }()
 
 	require.ErrorIs(t, <-o, packets.ErrServerBusy)
+	_ = w.Close()
+}
+
+// A hook that refuses a publish by WRAPPING a packets.Code, which is what
+// fmt.Errorf("%w") produces and what a hook returning context with its
+// refusal will do.
+type wrappingRefusalHook struct {
+	HookBase
+}
+
+func (h *wrappingRefusalHook) ID() string { return "wrapping-refusal" }
+
+func (h *wrappingRefusalHook) Provides(b byte) bool { return b == OnPublish }
+
+func (h *wrappingRefusalHook) OnPublish(cl *Client, pk packets.Packet) (packets.Packet, error) {
+	return pk, fmt.Errorf("refused by policy: %w", packets.ErrNotAuthorized)
+}
+
+// A refusal carrying a wrapped code is answered, not panicked on.
+//
+// errors.As succeeds through a wrapper, so a type assertion on the error
+// itself takes the broker down on an ordinary publish refusal - a hook is
+// entitled to add context to the code it returns.
+func TestPublishRefusedWithAWrappedCodeDoesNotPanic(t *testing.T) {
+	s := newServer()
+	require.NoError(t, s.AddHook(new(wrappingRefusalHook), nil))
+	defer s.Close()
+
+	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 5
+	// Nothing here drains the pipe, and the refusal is written to it. Left
+	// alone the write now waits out the keepalive bound, so this test would
+	// take fifteen seconds to assert something that happens immediately.
+	cl.ops.options.ClientNetWriteTimeout = 50 * time.Millisecond
+	s.Clients.Add(cl)
+
+	go func() {
+		_, _ = io.ReadAll(w)
+	}()
+
+	pk := *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet
+	require.NotPanics(t, func() {
+		_ = s.processPublish(cl, pk)
+	})
+
+	_ = r.Close()
+	_ = w.Close()
+}
+
+// DisconnectClient always disconnects, even for a v3 client under
+// PassiveClientDisconnect.
+//
+// That option means "the client was sent a DISCONNECT and will close the
+// connection itself". A v3 client is sent nothing, so honouring it there
+// would leave the connection open after the server decided to end it.
+func TestDisconnectClientClosesAV3ClientUnderPassiveDisconnect(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.Compatibilities.PassiveClientDisconnect = true
+	defer s.Close()
+
+	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 4 // 3.1.1: no server-to-client DISCONNECT
+	s.Clients.Add(cl)
+
+	go func() { _, _ = io.ReadAll(w) }()
+
+	_ = s.DisconnectClient(cl, packets.ErrNotAuthorized)
+
+	require.True(t, cl.Closed(), "a v3 client the server chose to disconnect was left connected")
+
+	_ = r.Close()
 	_ = w.Close()
 }
