@@ -261,7 +261,6 @@ func (h *Hooks) OnSessionEstablished(cl *Client, pk packets.Packet) {
 	}
 }
 
-// OnDisconnect is called when a client is disconnected for any reason.
 // OnConnectRefused is called when the server refuses a CONNECT before any
 // other hook has run, so that an embedder can see which client it was.
 //
@@ -285,6 +284,7 @@ func (h *Hooks) OnConnectRefused(cl *Client, pk packets.Packet, code packets.Cod
 	}
 }
 
+// OnDisconnect is called when a client is disconnected for any reason.
 func (h *Hooks) OnDisconnect(cl *Client, err error, expire bool) {
 	for _, hook := range h.GetAll() {
 		if hook.Provides(OnDisconnect) {

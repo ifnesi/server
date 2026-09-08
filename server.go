@@ -122,10 +122,14 @@ type Options struct {
 	// and OnPublishDropped that would have shed the slow client sit behind
 	// that same lock, so at QoS 1 they are never reached.
 	//
-	// Set, a write that does not complete in time fails with
-	// os.ErrDeadlineExceeded, the lock is released, and the connection is
-	// left for the caller to close — a timed-out write has put part of a
-	// packet on the wire and that stream cannot be continued.
+	// Set, a write that does not complete in time fails with a net.Error
+	// reporting Timeout, the lock is released, and the connection is left
+	// for the caller to close — a timed-out write has put part of a packet
+	// on the wire and that stream cannot be continued. It is net.Error
+	// rather than os.ErrDeadlineExceeded because the two agree for a plain
+	// TCP write and do not for every listener: a websocket writes through
+	// gorilla, whose buffered writev path yields "writev tcp ...: i/o
+	// timeout", which is not that sentinel.
 	ClientNetWriteTimeout time.Duration `yaml:"client_net_write_timeout" json:"client_net_write_timeout"`
 
 	// ClientNetReadBufferSize specifies the size of the client *bufio.Reader read buffer.
@@ -414,10 +418,16 @@ func (s *Server) eventLoop() {
 	}
 }
 
-// EstablishConnection establishes a new client when a listener accepts a new connection.
+// EstablishConnection establishes a new client when a listener accepts a new
+// connection, or when a caller embedding the server hands it one directly.
+//
+// Listeners.Establish is where the connection is registered with the
+// waitgroup Close waits on, so that both of those callers are covered by it.
 func (s *Server) EstablishConnection(listener string, c net.Conn) error {
-	cl := s.NewClient(c, listener, "", false)
-	return s.attachClient(cl, listener)
+	return s.Listeners.Establish(listener, c, func(listener string, c net.Conn) error {
+		cl := s.NewClient(c, listener, "", false)
+		return s.attachClient(cl, listener)
+	})
 }
 
 // attachClient validates an incoming client connection and if viable, attaches the client
@@ -433,13 +443,17 @@ func (s *Server) attachClient(cl *Client, listener string) error {
 
 	cl.ParseConnect(listener, pk)
 	if atomic.LoadInt64(&s.Info.ClientsConnected) >= s.Options.Capabilities.MaximumClients {
+		// The hook is told the code the client was actually sent, which
+		// differs by protocol version. A hook told one code while the
+		// client was sent another cannot answer the question it exists
+		// for -- which of my devices was turned away, and with what.
+		code := packets.ErrServerBusy
 		if cl.Properties.ProtocolVersion < 5 {
-			s.SendConnack(cl, packets.ErrServerUnavailable, false, nil)
-		} else {
-			s.SendConnack(cl, packets.ErrServerBusy, false, nil)
+			code = packets.ErrServerUnavailable
 		}
+		s.SendConnack(cl, code, false, nil)
 
-		s.hooks.OnConnectRefused(cl, pk, packets.ErrServerBusy)
+		s.hooks.OnConnectRefused(cl, pk, code)
 		return packets.ErrServerBusy
 	}
 

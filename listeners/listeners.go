@@ -47,9 +47,8 @@ type Listeners struct {
 	sync.RWMutex
 }
 
-// track wraps an establish function so that every connection it serves is
-// registered with ClientsWg for the duration, and refused once shutdown
-// has begun.
+// Establish registers a connection with ClientsWg for the duration of
+// establish, and refuses it once shutdown has begun.
 //
 // sync.WaitGroup forbids a positive Add concurrent with Wait. Registering
 // a client from the connection's own goroutine, as the server used to do,
@@ -60,23 +59,29 @@ type Listeners struct {
 //
 // Latching shutdown under the write lock, and registering only under the
 // read lock, makes that ordering impossible rather than unlikely.
-func (l *Listeners) track(establish EstablishFn) EstablishFn {
-	return func(id string, c net.Conn) error {
-		l.shutdown.RLock()
-		if l.closed {
-			l.shutdown.RUnlock()
-			// Shutdown has begun and this connection will not be served.
-			// Closing it is the whole of the answer; there is nothing here
-			// worth logging on every connection that arrives while a
-			// server is going down.
-			return c.Close()
-		}
-		l.ClientsWg.Add(1)
+//
+// Every connection the server attaches passes through here, because
+// EstablishConnection is both what ServeAll hands to a listener and what a
+// caller embedding the server calls with a connection of its own. Wrapping
+// the listener's establisher instead covered only the first of those, and
+// left a direct caller outside the latch and outside the wait -- so Close
+// returned while such a client was still being attached, which is the very
+// thing this exists to prevent.
+func (l *Listeners) Establish(id string, c net.Conn, establish EstablishFn) error {
+	l.shutdown.RLock()
+	if l.closed {
 		l.shutdown.RUnlock()
-
-		defer l.ClientsWg.Done()
-		return establish(id, c)
+		// Shutdown has begun and this connection will not be served.
+		// Closing it is the whole of the answer; there is nothing here
+		// worth logging on every connection that arrives while a
+		// server is going down.
+		return c.Close()
 	}
+	l.ClientsWg.Add(1)
+	l.shutdown.RUnlock()
+
+	defer l.ClientsWg.Done()
+	return establish(id, c)
 }
 
 // New returns a new instance of Listeners.
@@ -122,7 +127,7 @@ func (l *Listeners) Serve(id string, establisher EstablishFn) {
 	listener := l.internal[id]
 
 	go func(e EstablishFn) {
-		listener.Serve(l.track(e))
+		listener.Serve(e)
 	}(establisher)
 }
 

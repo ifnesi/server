@@ -4217,6 +4217,96 @@ func TestServerClose(t *testing.T) {
 	require.Equal(t, packets.TPacketData[packets.Disconnect].Get(packets.TDisconnectShuttingDown).RawBytes, <-recv)
 }
 
+// blockingConnectHook holds attachClient inside OnConnect until it is
+// released, so that Close is called while a client is demonstrably still
+// being attached rather than at a moment the test had to guess.
+type blockingConnectHook struct {
+	HookBase
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *blockingConnectHook) ID() string { return "blocking-connect" }
+
+func (h *blockingConnectHook) Provides(b byte) bool { return b == OnConnect }
+
+func (h *blockingConnectHook) OnConnect(cl *Client, pk packets.Packet) error {
+	close(h.entered)
+	<-h.release
+	return nil
+}
+
+// Close does not return while a client is still being attached, including a
+// client handed to EstablishConnection directly rather than accepted by a
+// listener. Registering only inside the listener's establisher covered the
+// second and not the first, so Close returned early for an embedder feeding
+// the server its own connections and for every test in this file.
+func TestServerCloseWaitsForDirectEstablishConnection(t *testing.T) {
+	h := &blockingConnectHook{entered: make(chan struct{}), release: make(chan struct{})}
+
+	s := newServer()
+	require.NoError(t, s.AddHook(h, nil))
+
+	r, w := net.Pipe()
+	attached := make(chan error, 1)
+	go func() {
+		attached <- s.EstablishConnection("tcp", r)
+	}()
+	go func() {
+		_, _ = w.Write(packets.TPacketData[packets.Connect].Get(packets.TConnectClean).RawBytes)
+	}()
+	go func() { _, _ = io.ReadAll(w) }()
+
+	<-h.entered // the client is inside attachClient and cannot leave
+
+	closed := make(chan struct{})
+	go func() {
+		_ = s.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a client was still being attached")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	// Hang the connection up from this side before waiting, because Close
+	// now genuinely waits for it: the client is attached under a listener
+	// id no listener owns, so closeListenerClients never reaches it and it
+	// would otherwise sit until its keepalive expired.
+	close(h.release)
+	_ = w.Close()
+	<-closed
+	<-attached
+}
+
+// A connection arriving after shutdown has latched is refused rather than
+// attached, whichever way it arrives.
+func TestServerEstablishConnectionRefusedAfterClose(t *testing.T) {
+	s := newServer()
+	require.NoError(t, s.Close())
+
+	r, w := net.Pipe()
+	defer w.Close()
+
+	// Nothing is written to the pipe: a refused connection is closed
+	// without its CONNECT being read, so this returns without waiting for
+	// one. Unlatched it blocks in readConnectionPacket instead, which is
+	// what the deadline below catches.
+	done := make(chan error, 1)
+	go func() { done <- s.EstablishConnection("tcp", r) }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("a connection arriving after shutdown was attached rather than refused")
+	}
+
+	require.Equal(t, 0, s.Clients.Len())
+}
+
 func TestServerClearExpiredInflights(t *testing.T) {
 	s := New(nil)
 	require.NotNil(t, s)
@@ -4880,6 +4970,38 @@ func TestOnConnectRefusedNamesTheClient(t *testing.T) {
 	ids, codes := hook.refusals()
 	require.Len(t, ids, 1)
 	require.Equal(t, "zen", ids[0]) // the fixture CONNECT's client id
+
+	// The fixture is a 3.1.1 CONNECT, and 3.1.1 has no Server Busy: the
+	// client is sent Server Unavailable, so that is what the hook is told.
+	require.Equal(t, packets.ErrServerUnavailable, codes[0])
+}
+
+// The same refusal to an MQTT 5 client, which is sent Server Busy. The two
+// versions are the whole of the difference, so both are checked -- a hook
+// told a code the client never received cannot name what it was turned away
+// with.
+func TestOnConnectRefusedNamesTheCodeTheClientWasSentV5(t *testing.T) {
+	cc := NewDefaultServerCapabilities()
+	cc.MaximumClients = 0
+	s := New(&Options{Logger: logger, Capabilities: cc})
+	hook := new(refusedHook)
+	require.NoError(t, s.AddHook(hook, nil))
+	require.NoError(t, s.AddHook(new(AllowHook), nil))
+	defer s.Close()
+
+	r, w := net.Pipe()
+	o := make(chan error)
+	go func() { o <- s.EstablishConnection("tcp", r) }()
+	go func() {
+		_, _ = w.Write(packets.TPacketData[packets.Connect].Get(packets.TConnectMqtt5).RawBytes)
+	}()
+	go func() { _, _ = io.ReadAll(w) }()
+
+	require.ErrorIs(t, <-o, packets.ErrServerBusy)
+	_ = w.Close()
+
+	_, codes := hook.refusals()
+	require.Len(t, codes, 1)
 	require.Equal(t, packets.ErrServerBusy, codes[0])
 }
 
