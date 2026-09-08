@@ -116,7 +116,8 @@ func TestWebsocketFailedToServe(t *testing.T) {
 
 func TestWebsocketUpgrade(t *testing.T) {
 	l := NewWebsocket(basicConfig)
-	_ = l.Init(logger)
+	require.NoError(t, l.Init(logger))
+	defer l.Close(MockCloser)
 
 	e := make(chan bool)
 	l.establish = func(id string, c net.Conn) error {
@@ -135,7 +136,8 @@ func TestWebsocketUpgrade(t *testing.T) {
 
 func TestWebsocketConnectionReads(t *testing.T) {
 	l := NewWebsocket(basicConfig)
-	_ = l.Init(nil)
+	require.NoError(t, l.Init(nil))
+	defer l.Close(MockCloser)
 
 	recv := make(chan []byte)
 	l.establish = func(id string, c net.Conn) error {
@@ -176,7 +178,8 @@ func TestWebsocketConnectionReads(t *testing.T) {
 
 func TestWebsocketWriteDeadlineEndsAWriteToAClientThatNeverReads(t *testing.T) {
 	l := NewWebsocket(basicConfig)
-	_ = l.Init(nil)
+	require.NoError(t, l.Init(nil))
+	defer l.Close(MockCloser)
 
 	result := make(chan error, 1)
 	l.establish = func(id string, c net.Conn) error {

@@ -90,7 +90,6 @@ type Hook interface {
 	OnSessionEstablish(cl *Client, pk packets.Packet)
 	OnSessionEstablished(cl *Client, pk packets.Packet)
 	OnDisconnect(cl *Client, err error, expire bool)
-	OnConnectRefused(cl *Client, pk packets.Packet, code packets.Code)
 	OnAuthPacket(cl *Client, pk packets.Packet) (packets.Packet, error)
 	OnPacketRead(cl *Client, pk packets.Packet) (packets.Packet, error) // triggers when a new packet is received by a client, but before packet validation
 	OnPacketEncode(cl *Client, pk packets.Packet) packets.Packet        // modify a packet before it is byte-encoded and written to the client
@@ -278,8 +277,20 @@ func (h *Hooks) OnSessionEstablished(cl *Client, pk packets.Packet) {
 // first question an operator asks.
 func (h *Hooks) OnConnectRefused(cl *Client, pk packets.Packet, code packets.Code) {
 	for _, hook := range h.GetAll() {
-		if hook.Provides(OnConnectRefused) {
-			hook.OnConnectRefused(cl, pk, code)
+		if !hook.Provides(OnConnectRefused) {
+			continue
+		}
+
+		// Asserted rather than named on the Hook interface, so that adding
+		// this hook breaks nobody's build. Hook carries 43 methods and every
+		// hook in the wild embeds HookBase to get them, which is where the
+		// no-op below lives - but an embedder who implemented the interface
+		// directly would stop compiling the day a method was added to it,
+		// and a minor release has no business doing that.
+		if refuser, ok := hook.(interface {
+			OnConnectRefused(cl *Client, pk packets.Packet, code packets.Code)
+		}); ok {
+			refuser.OnConnectRefused(cl, pk, code)
 		}
 	}
 }

@@ -281,11 +281,20 @@ func TestServerAddListenersFromConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 6, s.Listeners.Len())
 
+	// The port, not the whole address: a wildcard bind reports "[::]:1883"
+	// where IPv6 is available and "0.0.0.0:1883" where it is not, and which
+	// of those the kernel chose is not what this test is about.
+	port := func(addr string) string {
+		_, p, err := net.SplitHostPort(addr)
+		require.NoError(t, err)
+		return p
+	}
+
 	tcp, _ := s.Listeners.Get("tcp")
-	require.Equal(t, "[::]:1883", tcp.Address())
+	require.Equal(t, "1883", port(tcp.Address()))
 
 	ws, _ := s.Listeners.Get("ws")
-	require.Equal(t, "[::]:1882", ws.Address()) // bound at Init, reported like the TCP listener
+	require.Equal(t, "1882", port(ws.Address())) // bound at Init, reported like the TCP listener
 
 	health, _ := s.Listeners.Get("health")
 	require.Equal(t, ":1881", health.Address())

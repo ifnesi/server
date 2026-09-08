@@ -111,8 +111,15 @@ type Options struct {
 	ClientNetWriteBufferSize int `yaml:"client_net_write_buffer_size" json:"client_net_write_buffer_size"`
 
 	// ClientNetWriteTimeout bounds a single write to a client's connection.
-	// Zero, the default, leaves writes unbounded and is the behaviour of
-	// every release before this option existed.
+	//
+	// Zero, the default, does NOT mean unbounded: the bound is then the
+	// client's keepalive expiry, which is what every release before this
+	// option existed gave a write by arming both deadlines at once. Set this
+	// for a tighter bound than 1.5x keepalive. A client connecting with
+	// keepalive 0 has no bound either way.
+	//
+	// Spelling it in configuration: YAML takes `5s`, JSON has no duration
+	// type and needs raw nanoseconds.
 	//
 	// **It is not the slow client this protects.** WritePacket holds the
 	// client's lock across the write, so a client that has stopped reading
@@ -1090,6 +1097,20 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 	// cancel out was the entry they overwrote — the identifier is the
 	// client's and this map is keyed by the server's, so a colliding number
 	// cost the server the delivery it had outstanding there.
+	//
+	// **The write below is still exposed to that collision and this release
+	// does not close it.** Inflight.Set overwrites unconditionally, so a
+	// client choosing an identifier the server already has outstanding
+	// replaces that delivery: it is never acknowledged, never re-sent, and
+	// its quota is never returned. Set reports false and the counter and the
+	// hook are skipped, which is why nothing observes the loss.
+	//
+	// The root of it is that one map holds two identifier spaces MQTT-2.2.1
+	// says are independent - the client's for inbound flows, the server's
+	// for outbound. Separating them is a larger change than this release
+	// should carry, and the behaviour is not a regression: it is what every
+	// earlier version does. It is written here so the next reader does not
+	// have to rediscover that the fix above covers only the read half.
 	if pk.FixedHeader.Qos == 2 {
 		if ok := cl.State.Inflight.Set(ack); ok {
 			atomic.AddInt64(&s.Info.Inflight, 1)

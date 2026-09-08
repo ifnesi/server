@@ -1202,3 +1202,121 @@ func TestClientWritePacketDeadlineSurvivesThePacketsTheClientSends(t *testing.T)
 			"so it has to bound reads and not both")
 	}
 }
+
+// A write to a client that has stopped reading is bounded by the keepalive
+// even when ClientNetWriteTimeout is unset.
+//
+// This is a regression test for the default configuration rather than for the
+// option. refreshDeadline arms only the read deadline, so the keepalive no
+// longer bounds a write the way SetDeadline used to - and with the option at
+// its zero value that would leave a write able to block forever while holding
+// the client's lock, which is the deadlock the option exists to prevent. An
+// operator who upgrades and sets nothing must not end up worse off.
+func TestWriteIsBoundedByKeepaliveWithNoWriteTimeout(t *testing.T) {
+	r, w := net.Pipe()
+	defer r.Close()
+	defer w.Close()
+
+	cl, _, _ := newTestClient()
+	cl.Net.Conn = r
+	cl.State.Keepalive = 1
+	cl.ops.options.ClientNetWriteTimeout = 0 // the default, and the point
+
+	done := make(chan error, 1)
+	go func() {
+		// Nothing reads w, so this write can only end at a deadline.
+		done <- cl.WritePacket(*packets.TPacketData[packets.Publish].Get(packets.TPublishBasic).Packet)
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		require.True(t, isTimeout(err), "want a timeout, got %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("a write to a client that stopped reading was never bounded, with the keepalive set and the write timeout unset")
+	}
+}
+
+// And the option still overrides the keepalive when it is set, which is what
+// makes it useful: a deployment wanting a tighter bound than 1.5x keepalive
+// can have one.
+func TestWriteTimeoutOverridesTheKeepaliveBound(t *testing.T) {
+	r, w := net.Pipe()
+	defer r.Close()
+	defer w.Close()
+
+	cl, _, _ := newTestClient()
+	cl.Net.Conn = r
+	cl.State.Keepalive = 60 // 90s if the keepalive decided it
+	cl.ops.options.ClientNetWriteTimeout = 200 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cl.WritePacket(*packets.TPacketData[packets.Publish].Get(packets.TPublishBasic).Packet)
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		require.True(t, isTimeout(err), "want a timeout, got %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("the write timeout did not override the longer keepalive bound")
+	}
+}
+
+// recordingConn notes which deadline a caller armed. Which one matters more
+// than it looks: a websocket connection overrides SetWriteDeadline ONLY, and
+// passes SetDeadline and SetReadDeadline through to the socket underneath -
+// where gorilla overwrites the write deadline before every frame it sends. So
+// a bound armed with SetDeadline reaches a TCP client and silently does not
+// reach a websocket one.
+type recordingConn struct {
+	net.Conn
+	write, read, both time.Time
+	cleared           bool
+}
+
+// The armed deadline, not the last one: WritePacket clears it again on the
+// way out, so recording the most recent call records the clearing and reads
+// as though nothing was ever armed.
+func (c *recordingConn) SetWriteDeadline(t time.Time) error {
+	if t.IsZero() {
+		c.cleared = true
+	} else if c.write.IsZero() {
+		c.write = t
+	}
+	return nil
+}
+func (c *recordingConn) SetReadDeadline(t time.Time) error { c.read = t; return nil }
+func (c *recordingConn) SetDeadline(t time.Time) error     { c.both = t; return nil }
+func (c *recordingConn) Write(p []byte) (int, error)       { return len(p), nil }
+
+// The keepalive bound is armed as a WRITE deadline, which is the only one a
+// websocket connection routes to the thing that actually bounds the write.
+//
+// Armed as SetDeadline instead, this would still pass for a TCP client and
+// bound nothing at all for a websocket one - so the assertion is on which
+// method was called, not merely on the write ending.
+func TestTheKeepaliveWriteBoundIsArmedWhereAWebsocketCanSeeIt(t *testing.T) {
+	r, w := net.Pipe()
+	defer r.Close()
+	defer w.Close()
+
+	rec := &recordingConn{Conn: r}
+	cl, _, _ := newTestClient()
+	cl.Net.Conn = rec
+	cl.State.Keepalive = 10
+	cl.ops.options.ClientNetWriteTimeout = 0
+
+	require.NoError(t, cl.WritePacket(*packets.TPacketData[packets.Publish].Get(packets.TPublishBasic).Packet))
+
+	require.False(t, rec.write.IsZero(), "no write deadline was armed, so a websocket write is unbounded")
+	require.True(t, rec.both.IsZero(), "armed with SetDeadline, which a websocket connection does not route to the write")
+
+	// 10s keepalive means the 15s expiry refreshDeadline uses.
+	require.WithinDuration(t, time.Now().Add(15*time.Second), rec.write, 2*time.Second)
+
+	// And it is released with the lock, so it never outlives the write it
+	// was armed for.
+	require.True(t, rec.cleared, "the deadline was left armed on the connection")
+}

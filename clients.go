@@ -308,6 +308,22 @@ func (cl *Client) refreshDeadline(keepalive uint16) {
 	}
 }
 
+// writeDeadline is when a single write to this client must have completed.
+//
+// ClientNetWriteTimeout when it is set, and otherwise the same keepalive
+// expiry refreshDeadline uses for reads - because that is the bound every
+// release before this one gave a write, by arming both deadlines at once.
+// Zero means no bound, which happens only when neither is configured.
+func (cl *Client) writeDeadline() time.Time {
+	if d := cl.ops.options.ClientNetWriteTimeout; d > 0 {
+		return time.Now().Add(d)
+	}
+	if k := cl.State.Keepalive; k > 0 {
+		return time.Now().Add(time.Duration(k+(k/2)) * time.Second) // [MQTT-3.1.2-22]
+	}
+	return time.Time{}
+}
+
 // NextPacketID returns the next available (unused) packet id for the client.
 // If no unused packet ids are available, an error is returned and the client
 // should be disconnected.
@@ -661,9 +677,22 @@ func (cl *Client) WritePacket(pk packets.Packet) error {
 		// The connection is read once and held, so that the deadline is
 		// cleared on the connection it was armed on rather than on
 		// whatever cl.Net.Conn names by the time the write returns.
-		if d := cl.ops.options.ClientNetWriteTimeout; d > 0 {
+		// **Unset does not mean unbounded**, and this is the half that is
+		// easy to get wrong. refreshDeadline used to arm SetDeadline, which
+		// set the read AND write deadlines, so every release before this one
+		// bounded a write to a stalled client at the keepalive expiry.
+		// Arming only the read deadline there - which is what stops the read
+		// loop clearing a write deadline a queued write is relying on - takes
+		// that bound away, and a broker upgrading with this option unset
+		// would be worse off than before: a write could block forever holding
+		// the lock, which is the deadlock this option exists to prevent.
+		//
+		// So the option is an override, and its absence falls back to what
+		// the keepalive already promised. A client with no keepalive gets no
+		// bound, which is also what it got before.
+		if d := cl.writeDeadline(); !d.IsZero() {
 			if conn := cl.Net.Conn; conn != nil {
-				if err := conn.SetWriteDeadline(time.Now().Add(d)); err == nil {
+				if err := conn.SetWriteDeadline(d); err == nil {
 					defer conn.SetWriteDeadline(time.Time{})
 				}
 			}
